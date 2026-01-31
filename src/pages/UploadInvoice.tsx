@@ -17,6 +17,11 @@ import {
   HardDrive,
   LogIn,
   RefreshCw,
+
+  // ✅ NEW
+  Camera,
+  MessageCircle,
+  Send,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
@@ -209,6 +214,9 @@ export default function UploadInvoice() {
   const [selectedDriveFile, setSelectedDriveFile] = useState<string | null>(null);
   const [ocrProgress, setOcrProgress] = useState(0);
 
+  // ✅ NEW: share url after Save (for WhatsApp/Telegram)
+  const [shareUrl, setShareUrl] = useState<string>('');
+
   // Gmail
   const [gmailMessages, setGmailMessages] = useState<GmailMessage[]>([]);
   const [gmailLoading, setGmailLoading] = useState(false);
@@ -217,6 +225,9 @@ export default function UploadInvoice() {
 
   const workerRef = useRef<any>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // ✅ NEW: camera input ref (does not change UI; only triggers existing file selection style)
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
 
   const isAuthenticated = !!session?.user;
   const userEmail = session?.user?.email || '';
@@ -257,6 +268,7 @@ export default function UploadInvoice() {
       setGmailMessages([]);
       setSelectedGmailMsg(null);
       setSelectedGmailAttachmentId(null);
+      setShareUrl(''); // ✅ NEW
 
       toast({ title: 'Logged out', description: 'You have been signed out.' });
     } catch (e: any) {
@@ -266,6 +278,54 @@ export default function UploadInvoice() {
         description: corsSafeError(e),
       });
     }
+  };
+
+  // ✅ NEW: Camera Upload handler (same validation, no UI changes)
+  const handleCameraSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0];
+    if (selected && isValidFileType(selected)) {
+      setFile(selected);
+      setExtractedData(null);
+      setShareUrl('');
+    } else {
+      toast({
+        variant: 'destructive',
+        title: 'Invalid file',
+        description: 'Only PDF, JPG, PNG allowed.',
+      });
+    }
+  };
+
+  // ✅ NEW: WhatsApp share (uses shareUrl after Save)
+  const handleWhatsAppUpload = () => {
+    if (!shareUrl) {
+      toast({
+        variant: 'destructive',
+        title: 'Share link not ready',
+        description: 'First save the invoice to generate a link, then share to WhatsApp.',
+      });
+      return;
+    }
+    const text = `Invoice: ${shareUrl}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
+  };
+
+  // ✅ NEW: Telegram share (uses shareUrl after Save)
+  const handleTelegramUpload = () => {
+    if (!shareUrl) {
+      toast({
+        variant: 'destructive',
+        title: 'Share link not ready',
+        description: 'First save the invoice to generate a link, then share to Telegram.',
+      });
+      return;
+    }
+    const text = `Invoice: ${shareUrl}`;
+    window.open(
+      `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(text)}`,
+      '_blank',
+      'noopener,noreferrer',
+    );
   };
 
   const loadLibraries = useCallback(async () => {
@@ -387,6 +447,8 @@ export default function UploadInvoice() {
 
     setSelectedGmailMsg(null);
     setSelectedGmailAttachmentId(null);
+
+    setShareUrl(''); // ✅ NEW
   };
 
   // Drag/Drop
@@ -408,6 +470,7 @@ export default function UploadInvoice() {
       if (droppedFile && isValidFileType(droppedFile)) {
         setFile(droppedFile);
         setExtractedData(null);
+        setShareUrl(''); // ✅ NEW
       } else {
         toast({
           variant: 'destructive',
@@ -424,6 +487,7 @@ export default function UploadInvoice() {
     if (selected && isValidFileType(selected)) {
       setFile(selected);
       setExtractedData(null);
+      setShareUrl(''); // ✅ NEW
     } else {
       toast({
         variant: 'destructive',
@@ -589,6 +653,7 @@ export default function UploadInvoice() {
       const downloadedFile = new File([bytes], fileMetadata.name, { type: fileMetadata.mimeType });
 
       setFile(downloadedFile);
+      setShareUrl(''); // ✅ NEW
 
       setProcessingSteps((prev) =>
         prev.map((s, i) => (i === 0 ? { ...s, status: 'complete' } : i === 1 ? { ...s, status: 'processing' } : s)),
@@ -735,6 +800,7 @@ export default function UploadInvoice() {
       });
 
       setFile(downloadedFile);
+      setShareUrl(''); // ✅ NEW
 
       setProcessingSteps((prev) =>
         prev.map((s, i) => (i === 0 ? { ...s, status: 'complete' } : i === 1 ? { ...s, status: 'processing' } : s)),
@@ -815,6 +881,9 @@ export default function UploadInvoice() {
       }
 
       const publicUrl = supabase.storage.from('invoices').getPublicUrl(storagePath)?.data?.publicUrl || null;
+
+      // ✅ NEW: store share link for WhatsApp/Telegram
+      setShareUrl(publicUrl || '');
 
       const basePayload: any = {
         user_id: userId,
@@ -947,6 +1016,18 @@ export default function UploadInvoice() {
                         className="hidden"
                         id="file-upload"
                       />
+
+                      {/* ✅ NEW: hidden camera file input (does not change UI) */}
+                      <input
+                        ref={cameraInputRef}
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        capture="environment"
+                        onChange={handleCameraSelect}
+                        className="hidden"
+                        id="camera-upload"
+                      />
+
                       <Button asChild variant="outline">
                         <label htmlFor="file-upload" className="cursor-pointer">
                           Select File
@@ -954,6 +1035,38 @@ export default function UploadInvoice() {
                       </Button>
                     </div>
                   )}
+                </div>
+
+                {/* ✅ NEW: add 3 buttons WITHOUT changing existing UI structure */}
+                <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <Button
+                    className="w-full bg-blue-600 hover:bg-blue-700"
+                    onClick={() => cameraInputRef.current?.click()}
+                    disabled={uploading || processing}
+                  >
+                    <Camera className="h-4 w-4 mr-2" />
+                    Camera Upload
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={handleWhatsAppUpload}
+                    disabled={uploading || processing}
+                  >
+                    <MessageCircle className="h-4 w-4 mr-2" />
+                    WhatsApp Upload
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={handleTelegramUpload}
+                    disabled={uploading || processing}
+                  >
+                    <Send className="h-4 w-4 mr-2" />
+                    Telegram Upload
+                  </Button>
                 </div>
 
                 {file && !extractedData && (
@@ -977,6 +1090,9 @@ export default function UploadInvoice() {
                     </Button>
                   </div>
                 )}
+
+                {/* ✅ OPTIONAL (no UI change): show a small hint only if user clicks WhatsApp/Telegram before saving */}
+                {/* shareUrl is set after Save Invoice */}
               </CardContent>
             </Card>
           </TabsContent>
