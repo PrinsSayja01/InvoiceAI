@@ -1,8 +1,3 @@
-// ============================================================
-// Supabase Edge Function: process-invoice
-// Path: supabase/functions/process-invoice/index.ts
-// ============================================================
-
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 // ---------------------------
