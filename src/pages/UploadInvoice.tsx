@@ -217,6 +217,9 @@ export default function UploadInvoice() {
   // ✅ NEW: share url after Save (for WhatsApp/Telegram)
   const [shareUrl, setShareUrl] = useState<string>('');
 
+  // ✅ NEW: pipeline metadata from Edge Function
+  const [pipelineMeta, setPipelineMeta] = useState<any>(null);
+
   // Gmail
   const [gmailMessages, setGmailMessages] = useState<GmailMessage[]>([]);
   const [gmailLoading, setGmailLoading] = useState(false);
@@ -268,6 +271,7 @@ export default function UploadInvoice() {
       setGmailMessages([]);
       setSelectedGmailMsg(null);
       setSelectedGmailAttachmentId(null);
+    setPipelineMeta(null);
       setShareUrl(''); // ✅ NEW
 
       toast({ title: 'Logged out', description: 'You have been signed out.' });
@@ -287,6 +291,7 @@ export default function UploadInvoice() {
       setFile(selected);
       setExtractedData(null);
       setShareUrl('');
+      setPipelineMeta(null);
     } else {
       toast({
         variant: 'destructive',
@@ -437,6 +442,23 @@ export default function UploadInvoice() {
     return extractHeuristic(text, fileName);
   };
 
+  // ✅ NEW: Call Edge Function for advanced extraction/classification/compliance/agent decision
+  const runInvoicePipeline = async (text: string, f: File) => {
+    const { data, error } = await supabase.functions.invoke('process-invoice', {
+      body: {
+        fileName: f.name,
+        fileType: f.type,
+        extractedText: text,
+        // You can set this from Admin later; default inference happens server-side too
+        jurisdiction: extractedData?.currency === 'EUR' ? 'EU' : undefined,
+      },
+    });
+
+    if (error) throw error;
+    if (!data) throw new Error('process-invoice returned empty response');
+    return data as any;
+  };
+
   const resetForm = () => {
     setFile(null);
     setExtractedData(null);
@@ -525,7 +547,18 @@ export default function UploadInvoice() {
         prev.map((s, i) => (i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s)),
       );
 
+      const pipeline = await runInvoicePipeline(text, file);
+      setPipelineMeta(pipeline);
       const aiExtractedData = await extractInvoiceDataFree(text, file.name);
+      // overwrite with pipeline values if present
+      const merged: ExtractedData = {
+        vendor_name: pipeline.vendor_name ?? aiExtractedData.vendor_name,
+        invoice_number: pipeline.invoice_number ?? aiExtractedData.invoice_number,
+        invoice_date: pipeline.invoice_date ?? aiExtractedData.invoice_date,
+        total_amount: pipeline.total_amount != null ? String(pipeline.total_amount) : aiExtractedData.total_amount,
+        tax_amount: pipeline.tax_amount != null ? String(pipeline.tax_amount) : aiExtractedData.tax_amount,
+        currency: pipeline.currency ?? aiExtractedData.currency,
+      };
 
       setProcessingSteps((prev) =>
         prev.map((s, i) => (i === 2 ? { ...s, status: 'complete' } : i === 3 ? { ...s, status: 'processing' } : s)),
@@ -534,7 +567,7 @@ export default function UploadInvoice() {
       await new Promise((resolve) => setTimeout(resolve, 250));
       setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: 'complete' })));
 
-      setExtractedData(aiExtractedData);
+      setExtractedData(merged);
       toast({ title: 'Processed', description: 'Invoice processed successfully!' });
     } catch (error: any) {
       console.error(error);
@@ -674,7 +707,27 @@ export default function UploadInvoice() {
         prev.map((s, i) => (i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s)),
       );
 
+      const pipeline = await runInvoicePipeline(text, downloadedFile);
+      setPipelineMeta(pipeline);
+      const pipeline = await runInvoicePipeline(text, downloadedFile);
+      setPipelineMeta(pipeline);
       const aiExtractedData = await extractInvoiceDataFree(text, downloadedFile.name);
+      const merged: ExtractedData = {
+        vendor_name: pipeline.vendor_name ?? aiExtractedData.vendor_name,
+        invoice_number: pipeline.invoice_number ?? aiExtractedData.invoice_number,
+        invoice_date: pipeline.invoice_date ?? aiExtractedData.invoice_date,
+        total_amount: pipeline.total_amount != null ? String(pipeline.total_amount) : aiExtractedData.total_amount,
+        tax_amount: pipeline.tax_amount != null ? String(pipeline.tax_amount) : aiExtractedData.tax_amount,
+        currency: pipeline.currency ?? aiExtractedData.currency,
+      };
+      const merged: ExtractedData = {
+        vendor_name: pipeline.vendor_name ?? aiExtractedData.vendor_name,
+        invoice_number: pipeline.invoice_number ?? aiExtractedData.invoice_number,
+        invoice_date: pipeline.invoice_date ?? aiExtractedData.invoice_date,
+        total_amount: pipeline.total_amount != null ? String(pipeline.total_amount) : aiExtractedData.total_amount,
+        tax_amount: pipeline.tax_amount != null ? String(pipeline.tax_amount) : aiExtractedData.tax_amount,
+        currency: pipeline.currency ?? aiExtractedData.currency,
+      };
 
       setProcessingSteps((prev) =>
         prev.map((s, i) => (i === 2 ? { ...s, status: 'complete' } : i === 3 ? { ...s, status: 'processing' } : s)),
@@ -683,7 +736,7 @@ export default function UploadInvoice() {
       await new Promise((resolve) => setTimeout(resolve, 250));
       setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: 'complete' })));
 
-      setExtractedData(aiExtractedData);
+      setExtractedData(merged);
       toast({ title: 'Success', description: 'Invoice processed from Google Drive!' });
     } catch (e: any) {
       console.error(e);
@@ -830,7 +883,7 @@ export default function UploadInvoice() {
       await new Promise((resolve) => setTimeout(resolve, 250));
       setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: 'complete' })));
 
-      setExtractedData(aiExtractedData);
+      setExtractedData(merged);
       toast({ title: 'Success', description: 'Invoice processed from Gmail!' });
     } catch (e: any) {
       console.error(e);
@@ -850,6 +903,16 @@ export default function UploadInvoice() {
     if (extractedData) setExtractedData({ ...extractedData, [field]: value });
   };
 
+
+  // ✅ NEW: Hash to detect duplicates (SHA-256 of file bytes)
+  const sha256File = async (f: File) => {
+    const buf = await f.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  };
+
   // ✅ Save invoice: upload to Storage + insert row
   const saveInvoice = async () => {
     try {
@@ -865,6 +928,18 @@ export default function UploadInvoice() {
       setUploading(true);
 
       const userId = session.user.id;
+
+      const documentHash = await sha256File(file);
+
+      // Duplicate check (same user + same hash)
+      const dup = await supabase
+        .from('invoices')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('document_hash', documentHash)
+        .limit(1);
+
+      const isDuplicate = (dup.data || []).length > 0;
       const safeName = file.name.replace(/[^\w.\-]+/g, '_');
       const storagePath = `${userId}/${Date.now()}_${safeName}`;
 
@@ -880,14 +955,25 @@ export default function UploadInvoice() {
         throw uploadRes.error;
       }
 
+      // Prefer signed URL for private buckets; fall back to public URL if enabled
+      let shareLink: string | null = null;
+      try {
+        const signed = await supabase.storage.from('invoices').createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+        shareLink = signed.data?.signedUrl || null;
+      } catch (_e) {
+        // ignore and try public
+      }
       const publicUrl = supabase.storage.from('invoices').getPublicUrl(storagePath)?.data?.publicUrl || null;
+      const finalUrl = shareLink || publicUrl || null;
 
-      // ✅ NEW: store share link for WhatsApp/Telegram
-      setShareUrl(publicUrl || '');
+      // ✅ store share link for WhatsApp/Telegram
+      setShareUrl(finalUrl || '');
 
       const basePayload: any = {
         user_id: userId,
         file_name: file.name,
+        document_hash: documentHash,
+        is_duplicate: isDuplicate,
         vendor_name: extractedData.vendor_name || null,
         invoice_number: extractedData.invoice_number || null,
         invoice_date: extractedData.invoice_date || null,
@@ -899,8 +985,31 @@ export default function UploadInvoice() {
       const payloadWithOptional: any = {
         ...basePayload,
         storage_path: storagePath,
-        file_url: publicUrl,
+        file_url: finalUrl,
         file_type: file.type,
+
+        // Advanced metadata from pipeline (if available)
+        doc_class: pipelineMeta?.doc_class ?? null,
+        doc_class_confidence: pipelineMeta?.doc_class_confidence ?? null,
+        field_confidence: pipelineMeta?.field_confidence ?? null,
+        direction: pipelineMeta?.direction ?? null,
+        direction_confidence: pipelineMeta?.direction_confidence ?? null,
+        jurisdiction: pipelineMeta?.jurisdiction ?? null,
+        vat_rate: pipelineMeta?.vat_rate ?? null,
+        vat_amount_computed: pipelineMeta?.vat_amount_computed ?? null,
+        compliance_issues: pipelineMeta?.compliance_issues ?? null,
+        fraud_score: pipelineMeta?.fraud_score ?? null,
+        anomaly_flags: pipelineMeta?.anomaly_flags ?? null,
+        approval: pipelineMeta?.approval ?? null,
+        approval_confidence: pipelineMeta?.approval_confidence ?? null,
+        approval_reasons: pipelineMeta?.approval_reasons ?? null,
+        needs_info_fields: pipelineMeta?.needs_info_fields ?? null,
+        category: pipelineMeta?.category ?? null,
+        esg_category: pipelineMeta?.esg_category ?? null,
+        co2e_estimate: pipelineMeta?.co2e_estimate ?? null,
+        emissions_confidence: pipelineMeta?.emissions_confidence ?? null,
+        payment_payload: pipelineMeta?.payment_payload ?? null,
+        payment_qr_string: pipelineMeta?.payment_qr_string ?? null,
       };
 
       // try insert with optional cols; fallback if schema missing

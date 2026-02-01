@@ -222,11 +222,16 @@ export default function Invoices() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Vendor</TableHead>
+                      <TableHead>Doc</TableHead>
+                      <TableHead>Direction</TableHead>
                       <TableHead>Invoice #</TableHead>
                       <TableHead>Date</TableHead>
                       <TableHead>Amount</TableHead>
+                      <TableHead>Approval</TableHead>
                       <TableHead>Risk</TableHead>
                       <TableHead>Compliance</TableHead>
+                      <TableHead>CO₂e</TableHead>
+                      <TableHead>Dup</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -250,6 +255,18 @@ export default function Invoices() {
                           </div>
                         </TableCell>
 
+                        <TableCell>
+                          <Badge variant="secondary" className="capitalize">
+                            {String((invoice as any).doc_class || "other").replace("_", " ")}
+                          </Badge>
+                        </TableCell>
+
+                        <TableCell>
+                          <Badge variant="outline" className="capitalize">
+                            {String((invoice as any).direction || "unknown")}
+                          </Badge>
+                        </TableCell>
+
                         <TableCell>{invoice.invoice_number || "-"}</TableCell>
 
                         <TableCell>
@@ -262,9 +279,28 @@ export default function Invoices() {
                           {formatMoney(invoice.total_amount, invoice.currency)}
                         </TableCell>
 
+                        <TableCell>
+                          <Badge
+                            variant={
+                              (invoice as any).approval === "pass"
+                                ? "default"
+                                : (invoice as any).approval === "fail"
+                                ? "destructive"
+                                : "secondary"
+                            }
+                            className="capitalize"
+                          >
+                            {String((invoice as any).approval || "pending").replace("_", " ")}
+                          </Badge>
+                        </TableCell>
+
                         <TableCell>{getRiskBadge(invoice.risk_score)}</TableCell>
 
                         <TableCell>{getComplianceBadge(invoice.compliance_status)}</TableCell>
+
+                        <TableCell className="text-sm tabular-nums">
+                          {(invoice as any).co2e_estimate != null ? Number((invoice as any).co2e_estimate).toFixed(2) : "—"}
+                        </TableCell>
 
                         <TableCell>
                           <div className="flex items-center justify-end gap-2">

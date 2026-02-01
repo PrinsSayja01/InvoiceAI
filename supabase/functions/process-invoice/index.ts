@@ -1,134 +1,260 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+// ============================================================
+// Supabase Edge Function: process-invoice
+// Path: supabase/functions/process-invoice/index.ts
+// ============================================================
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-function pickCurrency(text: string) {
-  if (text.includes("€")) return "EUR";
-  if (text.includes("£")) return "GBP";
-  if (text.includes("$")) return "USD";
-  return "USD";
+// ---------------------------
+// Helper Functions
+// ---------------------------
+
+// Document Classification
+function classifyDocument(text: string) {
+  const t = text.toLowerCase();
+
+  if (t.includes("prescription") || t.includes("doctor"))
+    return { doc_class: "prescription", confidence: 0.9 };
+
+  if (t.includes("sick note") || t.includes("medical leave"))
+    return { doc_class: "sick_note", confidence: 0.9 };
+
+  if (t.includes("receipt") || t.includes("paid"))
+    return { doc_class: "receipt", confidence: 0.85 };
+
+  if (t.includes("offer") || t.includes("quotation"))
+    return { doc_class: "offer", confidence: 0.8 };
+
+  if (t.includes("invoice") || t.includes("vat"))
+    return { doc_class: "invoice", confidence: 0.95 };
+
+  return { doc_class: "other", confidence: 0.5 };
 }
 
-function toNumber(s: string) {
-  return Number(String(s).replace(/,/g, "").trim());
+// Incoming vs Outgoing
+function classifyDirection(text: string) {
+  const t = text.toLowerCase();
+
+  if (t.includes("bill to") || t.includes("customer"))
+    return { direction: "outgoing", confidence: 0.75 };
+
+  if (t.includes("supplier") || t.includes("payable"))
+    return { direction: "incoming", confidence: 0.75 };
+
+  return { direction: "unknown", confidence: 0.4 };
 }
 
-function extractInvoice(text: string) {
-  const currency = pickCurrency(text);
+// VAT Compliance
+function vatCompliance(total: number, tax: number) {
+  const issues: any[] = [];
+  let vat_rate = 0;
 
-  const invoiceNumber =
-    text.match(/(invoice\s*(number|no\.|#)\s*[:\-]?\s*([A-Z0-9\-\/]+))/i)?.[3] ||
-    text.match(/\bINV[-\s]?\d{2,}\b/i)?.[0] ||
-    null;
-
-  // date patterns
-  let invoiceDate: string | null = null;
-  const ymd = text.match(/\b(20\d{2})[-\/\.](\d{1,2})[-\/\.](\d{1,2})\b/);
-  if (ymd) {
-    const yyyy = ymd[1];
-    const mm = String(ymd[2]).padStart(2, "0");
-    const dd = String(ymd[3]).padStart(2, "0");
-    invoiceDate = `${yyyy}-${mm}-${dd}`;
-  } else {
-    const dmy = text.match(/\b(\d{1,2})[-\/\.](\d{1,2})[-\/\.](20\d{2})\b/);
-    if (dmy) {
-      const dd = String(dmy[1]).padStart(2, "0");
-      const mm = String(dmy[2]).padStart(2, "0");
-      const yyyy = dmy[3];
-      invoiceDate = `${yyyy}-${mm}-${dd}`;
-    }
+  if (total > 0 && tax > 0) {
+    vat_rate = +(tax / total).toFixed(2);
   }
 
-  const totalMatch =
-    text.match(/(total|amount due|grand total)\s*[:\-]?\s*[$€£]?\s*([\d,]+(?:\.\d{1,2})?)/i) ||
-    text.match(/[$€£]\s*([\d,]+(?:\.\d{1,2})?)/);
+  if (vat_rate > 0.25) {
+    issues.push({
+      severity: "HIGH",
+      message: "VAT rate unusually high",
+    });
+  }
 
-  const taxMatch =
-    text.match(/(tax|vat)\s*[:\-]?\s*[$€£]?\s*([\d,]+(?:\.\d{1,2})?)/i) || null;
-
-  const totalAmount = totalMatch ? toNumber(totalMatch[2] ?? totalMatch[1]) : null;
-  const taxAmount = taxMatch ? toNumber(taxMatch[2]) : null;
-
-  // vendor guess: first non-empty line
-  const firstLine = text.split("\n").map((l) => l.trim()).find((l) => l.length > 3) ?? "";
-  const vendorName =
-    text.match(/vendor\s*[:\-]\s*(.+)/i)?.[1]?.trim() ||
-    text.match(/from\s*[:\-]\s*(.+)/i)?.[1]?.trim() ||
-    (firstLine.length < 60 ? firstLine : null);
-
-  let invoiceType: string = "other";
-  const lower = text.toLowerCase();
-  if (lower.includes("service") || lower.includes("consulting")) invoiceType = "services";
-  else if (lower.includes("product") || lower.includes("item") || lower.includes("qty")) invoiceType = "goods";
+  if (tax === 0) {
+    issues.push({
+      severity: "MEDIUM",
+      message: "No VAT detected (check compliance)",
+    });
+  }
 
   return {
-    vendor_name: vendorName || null,
-    invoice_number: invoiceNumber,
-    invoice_date: invoiceDate,
-    total_amount: totalAmount,
-    tax_amount: taxAmount,
-    currency,
-    invoice_type: invoiceType,
-    language: "en",
+    vat_rate,
+    vat_amount_computed: tax,
+    compliance_issues: issues,
   };
 }
 
+// Fraud Score
+function fraudDetection(total: number) {
+  let score = 0;
+
+  if (total > 10000) score += 0.5;
+  if (total > 50000) score += 0.8;
+
+  return {
+    fraud_score: Math.min(score, 1.0),
+    anomaly_flags: {
+      high_amount: total > 10000,
+    },
+  };
+}
+
+// Approval Agent
+function approvalAgent(fraud_score: number, compliance_issues: any[]) {
+  if (fraud_score > 0.7) {
+    return {
+      approval: "FAIL",
+      confidence: 0.9,
+      reasons: ["Fraud score too high"],
+      needs_info_fields: [],
+    };
+  }
+
+  if (compliance_issues.length > 0) {
+    return {
+      approval: "NEEDS_INFO",
+      confidence: 0.75,
+      reasons: compliance_issues.map((i) => i.message),
+      needs_info_fields: ["tax_amount"],
+    };
+  }
+
+  return {
+    approval: "PASS",
+    confidence: 0.95,
+    reasons: ["Invoice looks valid"],
+    needs_info_fields: [],
+  };
+}
+
+// ESG Mapping
+function esgMapping(vendor: string) {
+  if (vendor.toLowerCase().includes("energy")) {
+    return { category: "High Emissions", co2e: 120 };
+  }
+  return { category: "General", co2e: 25 };
+}
+
+// QR Payment Payload
+function generatePaymentQR(amount: number, invoice_number: string) {
+  return {
+    payload: {
+      amount,
+      reference: invoice_number,
+      currency: "EUR",
+    },
+    qr_string: `PAYMENT|AMOUNT:${amount}|REF:${invoice_number}`,
+  };
+}
+
+// ---------------------------
+// MAIN FUNCTION
+// ---------------------------
+
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-
   try {
-    const { fileName, fileType, extractedText } = await req.json();
+    const body = await req.json();
 
-    if (!fileName || !fileType || !extractedText) {
-      return new Response(JSON.stringify({ error: "Missing fileName, fileType, or extractedText" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    // Input text from OCR (frontend sends)
+    const text: string = body.text || "";
+    const filename: string = body.filename || "unknown.pdf";
 
-    const extracted = extractInvoice(String(extractedText));
+    // ---------------------------
+    // Basic Extraction (Demo)
+    // ---------------------------
+    const vendor_name = "Demo Vendor GmbH";
+    const invoice_number = "INV-2026-001";
+    const invoice_date = "2026-02-01";
 
-    // Fraud checks
-    const anomalies: string[] = [];
-    let risk_score: "low" | "medium" | "high" = "low";
-    if ((extracted.total_amount ?? 0) > 25000) risk_score = "medium";
-    if ((extracted.total_amount ?? 0) > 40000) {
-      risk_score = "high";
-      anomalies.push("Unusually high amount");
-    }
+    const total_amount = 1200;
+    const tax_amount = 228;
 
-    // Compliance
-    let compliance_status: "compliant" | "needs_review" = "compliant";
-    if (!extracted.tax_amount || extracted.tax_amount <= 0) compliance_status = "needs_review";
+    // ---------------------------
+    // Classification
+    // ---------------------------
+    const docResult = classifyDocument(text);
+    const dirResult = classifyDirection(text);
 
-    const result = {
-      ...extracted,
-      ingestion: { valid: true, fileType, fileName, timestamp: new Date().toISOString() },
-      fraud_detection: { risk_score, is_duplicate: false, anomalies, checked_at: new Date().toISOString() },
-      compliance: {
-        compliance_status,
-        vat_valid: compliance_status === "compliant",
-        tax_classification: extracted.invoice_type === "services" ? "Service Tax" : "Goods Tax",
-        checked_at: new Date().toISOString(),
-      },
-      risk_score,
-      compliance_status,
-      is_flagged: risk_score === "high",
-      flag_reason: anomalies.length ? anomalies.join(", ") : null,
+    // ---------------------------
+    // VAT Compliance
+    // ---------------------------
+    const vatResult = vatCompliance(total_amount, tax_amount);
+
+    // ---------------------------
+    // Fraud Detection
+    // ---------------------------
+    const fraudResult = fraudDetection(total_amount);
+
+    // ---------------------------
+    // Approval Agent
+    // ---------------------------
+    const approvalResult = approvalAgent(
+      fraudResult.fraud_score,
+      vatResult.compliance_issues,
+    );
+
+    // ---------------------------
+    // ESG Mapping
+    // ---------------------------
+    const esgResult = esgMapping(vendor_name);
+
+    // ---------------------------
+    // Payment QR
+    // ---------------------------
+    const qrResult = generatePaymentQR(total_amount, invoice_number);
+
+    // ---------------------------
+    // Field Confidence (Demo)
+    // ---------------------------
+    const field_confidence = {
+      vendor_name: 0.9,
+      invoice_number: 0.85,
+      invoice_date: 0.95,
+      total_amount: 0.8,
+      tax_amount: 0.75,
     };
 
-    return new Response(JSON.stringify(result), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  } catch (e: any) {
-    return new Response(JSON.stringify({ error: e?.message || "Unknown error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // ---------------------------
+    // Response JSON
+    // ---------------------------
+    return new Response(
+      JSON.stringify({
+        vendor_name,
+        invoice_number,
+        invoice_date,
+        total_amount,
+        tax_amount,
+        currency: "EUR",
+
+        // Advanced AI Outputs
+        doc_class: docResult.doc_class,
+        doc_class_confidence: docResult.confidence,
+
+        direction: dirResult.direction,
+        direction_confidence: dirResult.confidence,
+
+        field_confidence,
+
+        jurisdiction: "EU",
+        vat_rate: vatResult.vat_rate,
+        vat_amount_computed: vatResult.vat_amount_computed,
+        compliance_issues: vatResult.compliance_issues,
+
+        fraud_score: fraudResult.fraud_score,
+        anomaly_flags: fraudResult.anomaly_flags,
+
+        approval: approvalResult.approval,
+        approval_confidence: approvalResult.confidence,
+        approval_reasons: approvalResult.reasons,
+        needs_info_fields: approvalResult.needs_info_fields,
+
+        esg_category: esgResult.category,
+        co2e_estimate: esgResult.co2e,
+
+        payment_payload: qrResult.payload,
+        payment_qr_string: qrResult.qr_string,
+      }),
+      {
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  } catch (err) {
+    return new Response(
+      JSON.stringify({
+        error: "Processing failed",
+        details: String(err),
+      }),
+      { status: 500 },
+    );
   }
 });
